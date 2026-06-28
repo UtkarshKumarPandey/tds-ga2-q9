@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -11,6 +11,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -19,7 +20,7 @@ TOTAL_ORDERS = 51
 RATE_LIMIT = 15
 WINDOW = 10
 
-idempotency_store = {}
+orders_by_key = {}
 rate_store = {}
 
 
@@ -29,30 +30,28 @@ class Order(BaseModel):
 
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
-    if request.method == "OPTIONS":
-        return await call_next(request)
+    if request.method != "OPTIONS":
+        client = request.headers.get("X-Client-Id")
 
-    client = request.headers.get("X-Client-Id")
+        if client:
+            now = time.time()
 
-    if client:
-        now = time.time()
+            hits = rate_store.get(client, [])
+            hits = [t for t in hits if now - t < WINDOW]
 
-        hits = rate_store.get(client, [])
-        hits = [t for t in hits if now - t < WINDOW]
+            if len(hits) >= RATE_LIMIT:
+                retry_after = max(1, int(WINDOW - (now - hits[0])))
 
-        if len(hits) >= RATE_LIMIT:
-            retry_after = max(1, int(WINDOW - (now - hits[0])))
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Rate limit exceeded"},
+                    headers={
+                        "Retry-After": str(retry_after)
+                    },
+                )
 
-            return JSONResponse(
-                status_code=429,
-                content={"detail": "Rate limit exceeded"},
-                headers={
-                    "Retry-After": str(retry_after)
-                },
-            )
-
-        hits.append(now)
-        rate_store[client] = hits
+            hits.append(now)
+            rate_store[client] = hits
 
     return await call_next(request)
 
@@ -62,30 +61,39 @@ def root():
     return {"status": "ok"}
 
 
-@app.post("/orders", status_code=201)
+@app.post("/orders")
 def create_order(
     order: Order,
+    response: Response,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
-    if idempotency_key in idempotency_store:
-        return idempotency_store[idempotency_key]
+    response.status_code = 201
+
+    if idempotency_key in orders_by_key:
+        return orders_by_key[idempotency_key]
 
     obj = {
         "id": str(uuid.uuid4()),
         "item": order.item,
     }
 
-    idempotency_store[idempotency_key] = obj
+    orders_by_key[idempotency_key] = obj
 
     return obj
 
 
 @app.get("/orders")
-def get_orders(
+def list_orders(
     limit: int = 10,
     cursor: str = "0",
 ):
-    start = int(cursor)
+    try:
+        start = int(cursor)
+    except Exception:
+        start = 0
+
+    if limit < 1:
+        limit = 1
 
     end = min(start + limit, TOTAL_ORDERS)
 
