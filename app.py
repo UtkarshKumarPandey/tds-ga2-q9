@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 import time
@@ -18,9 +19,7 @@ TOTAL_ORDERS = 51
 RATE_LIMIT = 15
 WINDOW = 10
 
-
 idempotency = {}
-
 buckets = {}
 
 
@@ -36,7 +35,6 @@ def root():
 @app.post("/orders", status_code=201)
 def create_order(
     order: Order,
-    response: Response,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
     if idempotency_key in idempotency:
@@ -56,7 +54,6 @@ def list_orders(
     limit: int = 10,
     cursor: str = "0",
     x_client_id: str = Header(..., alias="X-Client-Id"),
-    response: Response = None,
 ):
     now = time.time()
 
@@ -64,23 +61,23 @@ def list_orders(
     hits = [t for t in hits if now - t < WINDOW]
 
     if len(hits) >= RATE_LIMIT:
-        response.headers["Retry-After"] = "10"
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded"},
+            headers={"Retry-After": "10"},
+        )
 
     hits.append(now)
     buckets[x_client_id] = hits
 
     start = int(cursor)
 
-    items = []
-
-    for i in range(start + 1, min(start + limit + 1, TOTAL_ORDERS + 1)):
-        items.append({
-            "id": i
-        })
+    items = [
+        {"id": i}
+        for i in range(start + 1, min(start + limit + 1, TOTAL_ORDERS + 1))
+    ]
 
     next_cursor = None
-
     if items and items[-1]["id"] < TOTAL_ORDERS:
         next_cursor = str(items[-1]["id"])
 
