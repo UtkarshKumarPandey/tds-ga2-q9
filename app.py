@@ -30,7 +30,8 @@ class Order(BaseModel):
 
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
-    if request.method != "OPTIONS":
+
+    if request.method == "GET" and request.url.path == "/orders":
         client = request.headers.get("X-Client-Id")
 
         if client:
