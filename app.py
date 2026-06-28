@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -27,6 +27,36 @@ class Order(BaseModel):
     item: Optional[str] = "demo"
 
 
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    client = request.headers.get("X-Client-Id")
+
+    if client:
+        now = time.time()
+
+        hits = rate_store.get(client, [])
+        hits = [t for t in hits if now - t < WINDOW]
+
+        if len(hits) >= RATE_LIMIT:
+            retry_after = max(1, int(WINDOW - (now - hits[0])))
+
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+                headers={
+                    "Retry-After": str(retry_after)
+                },
+            )
+
+        hits.append(now)
+        rate_store[client] = hits
+
+    return await call_next(request)
+
+
 @app.get("/")
 def root():
     return {"status": "ok"}
@@ -46,6 +76,7 @@ def create_order(
     }
 
     idempotency_store[idempotency_key] = obj
+
     return obj
 
 
@@ -53,38 +84,14 @@ def create_order(
 def get_orders(
     limit: int = 10,
     cursor: str = "0",
-    x_client_id: str = Header(..., alias="X-Client-Id"),
 ):
-    now = time.time()
-
-    timestamps = rate_store.get(x_client_id, [])
-    timestamps = [t for t in timestamps if now - t < WINDOW]
-
-    if len(timestamps) >= RATE_LIMIT:
-        return JSONResponse(
-            status_code=429,
-            content={"detail": "Rate limit exceeded"},
-            headers={
-                "Retry-After": "10"
-            },
-        )
-
-    timestamps.append(now)
-    rate_store[x_client_id] = timestamps
-
     start = int(cursor)
-
-    items = []
 
     end = min(start + limit, TOTAL_ORDERS)
 
-    for i in range(start + 1, end + 1):
-        items.append({
-            "id": i
-        })
+    items = [{"id": i} for i in range(start + 1, end + 1)]
 
     next_cursor = None
-
     if end < TOTAL_ORDERS:
         next_cursor = str(end)
 
