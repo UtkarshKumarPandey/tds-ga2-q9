@@ -43,12 +43,15 @@ async def rate_limit(request: Request, call_next):
                 retry_after = max(1, int(WINDOW - (now - hits[0])))
 
                 return JSONResponse(
-                    status_code=429,
-                    content={"detail": "Rate limit exceeded"},
-                    headers={
-                        "Retry-After": str(retry_after)
-                    },
-                )
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+                headers={
+                    "Retry-After": str(retry_after),
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Headers": "*",
+                    "Access-Control-Allow-Methods": "*",
+                },
+            )
 
             hits.append(now)
             rate_store[client] = hits
