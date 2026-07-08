@@ -59,13 +59,14 @@ async def rate_limiter(request: Request, call_next):
 def root():
     return {"status": "ok"}
 
-
-@app.post("/orders", status_code=201)
+@app.post("/orders")
 def create_order(
     order: Order,
+    response: Response,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
     if idempotency_key in orders:
+        response.status_code = 200
         return orders[idempotency_key]
 
     obj = {
@@ -74,7 +75,7 @@ def create_order(
     }
 
     orders[idempotency_key] = obj
-
+    response.status_code = 201
     return obj
 
 
