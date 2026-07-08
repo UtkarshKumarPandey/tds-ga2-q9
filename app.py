@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 import uuid
@@ -20,26 +21,51 @@ RATE_LIMIT = 15
 WINDOW = 10
 
 orders = {}
-rate_limit = {}
+buckets = {}
 
 
 class Order(BaseModel):
     item: Optional[str] = "demo"
 
 
+@app.middleware("http")
+async def rate_limiter(request: Request, call_next):
+
+    if request.url.path == "/orders":
+
+        client = request.headers.get("X-Client-Id")
+
+        if client:
+
+            now = time.time()
+
+            hits = buckets.get(client, [])
+            hits = [t for t in hits if now - t < WINDOW]
+
+            if len(hits) >= RATE_LIMIT:
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Rate limit exceeded"},
+                    headers={"Retry-After": "10"},
+                )
+
+            hits.append(now)
+            buckets[client] = hits
+
+    return await call_next(request)
+
+
 @app.get("/")
-def home():
+def root():
     return {"status": "ok"}
 
 
-@app.post("/orders")
+@app.post("/orders", status_code=201)
 def create_order(
     order: Order,
-    response: Response,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
     if idempotency_key in orders:
-        response.status_code = 200
         return orders[idempotency_key]
 
     obj = {
@@ -48,48 +74,29 @@ def create_order(
     }
 
     orders[idempotency_key] = obj
-    response.status_code = 201
 
     return obj
 
 
 @app.get("/orders")
 def list_orders(
-    response: Response,
     x_client_id: str = Header(..., alias="X-Client-Id"),
     limit: int = 10,
-    cursor: Optional[str] = None,
+    cursor: str = "0",
 ):
-    now = time.time()
+    try:
+        start = int(cursor)
+    except:
+        start = 0
 
-    hits = rate_limit.get(x_client_id, [])
-    hits = [t for t in hits if now - t < WINDOW]
-
-    if len(hits) >= RATE_LIMIT:
-        raise HTTPException(
-            status_code=429,
-            detail="Rate limit exceeded",
-            headers={
-                "Retry-After": "10"
-            },
-        )
-
-    hits.append(now)
-    rate_limit[x_client_id] = hits
-
-    start = int(cursor) if cursor else 0
+    if limit < 1:
+        limit = 1
 
     end = min(start + limit, TOTAL_ORDERS)
 
-    items = []
-
-    for i in range(start + 1, end + 1):
-        items.append({
-            "id": i
-        })
+    items = [{"id": i} for i in range(start + 1, end + 1)]
 
     next_cursor = None
-
     if end < TOTAL_ORDERS:
         next_cursor = str(end)
 
